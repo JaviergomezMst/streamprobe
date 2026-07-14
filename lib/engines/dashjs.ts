@@ -1,0 +1,163 @@
+import { loadLib } from "./loaders";
+import { autoplay } from "./autoplay";
+import { hasNetOverrides, proxifyUrl } from "@/lib/proxy";
+import type { EngineCallbacks, EngineController, LoadConfig } from "./types";
+
+export function createDashjs(cb: EngineCallbacks): EngineController {
+  let player: any = null;
+  let dashjs: any = null;
+  let statsIv: ReturnType<typeof setInterval> | null = null;
+
+  async function load(video: HTMLVideoElement, cfg: LoadConfig) {
+    cb.onLog("info", `Loading dash.js ${cfg.version} (bundled)…`);
+    dashjs = await loadLib("dashjs", cfg.version);
+
+    player = dashjs.MediaPlayer().create();
+    player.initialize(video, null, false);
+
+    // Route requests through the proxy to inject CDN headers.
+    if (hasNetOverrides(cfg.net)) {
+      if (typeof player.addRequestInterceptor === "function") {
+        player.addRequestInterceptor((request: any) => {
+          if (request?.url) request.url = proxifyUrl(request.url, cfg.net);
+          return Promise.resolve(request);
+        });
+        cb.onLog("info", "Proxy ON — injecting CDN headers on media requests");
+      } else {
+        cb.onLog(
+          "warn",
+          "This dash.js version can't rewrite request URLs — header overrides not applied."
+        );
+      }
+    }
+
+    const bufG = cfg.advanced.bufferGoal;
+    player.updateSettings({
+      streaming: {
+        delay: { liveDelay: 4 },
+        liveCatchup: { enabled: true },
+        buffer: { bufferTimeAtTopQuality: bufG, bufferTimeDefault: bufG },
+      },
+    });
+
+    if (cfg.drm.enabled) {
+      const { system, licenseUrl, headers } = cfg.drm;
+      const pd: any = {};
+      if (system === "widevine")
+        pd["com.widevine.alpha"] = { serverURL: licenseUrl, httpRequestHeaders: headers };
+      if (system === "playready")
+        pd["com.microsoft.playready"] = {
+          serverURL: licenseUrl,
+          httpRequestHeaders: headers,
+        };
+      if (system === "fairplay") {
+        pd["com.apple.fps"] = { serverURL: licenseUrl };
+        cb.onLog("warn", "FairPlay with dash.js: use Native/AVPlayer engine in Safari");
+      }
+      player.setProtectionData(pd);
+      cb.onLog("drm", `DRM: ${system.toUpperCase()} → ${licenseUrl}`);
+    }
+
+    const ev = dashjs.MediaPlayer.events;
+    player.on(ev.ERROR, (e: any) => {
+      cb.onLog("error", `dash.js: ${JSON.stringify(e.error || e.event || "unknown")}`);
+      cb.onState("error");
+    });
+    player.on(ev.QUALITY_CHANGE_RENDERED, (e: any) => {
+      if (e.mediaType !== "video") return;
+      try {
+        const brs = player.getBitrateInfoListFor("video");
+        const prev = brs[e.oldQuality];
+        const curr = brs[e.newQuality];
+        if (prev && curr) {
+          cb.onAbr(prev.bitrate, curr.bitrate, { w: curr.width, h: curr.height });
+          cb.onMetrics({ bitrate: curr.bitrate });
+        }
+      } catch {
+        /* noop */
+      }
+    });
+    player.on(ev.BUFFER_EMPTY, () => cb.onLog("buffer", "Buffer empty"));
+    player.on(ev.BUFFER_LOADED, () => cb.onLog("info", "Buffer loaded"));
+
+    // Autoplay as soon as playback is possible.
+    player.on(ev.CAN_PLAY, () => autoplay(video, cb.onLog));
+
+    // Manifest updates (initial + live refreshes). dash.js exposes a parsed
+    // model rather than raw XML, so count periods from it and serialize.
+    player.on(ev.MANIFEST_LOADED, (e: any) => {
+      cb.onLog("info", "Manifest loaded");
+      cb.onNetwork({ time: new Date(), kind: "manifest", url: e?.data?.url || cfg.url });
+      const d = e?.data;
+      if (!d) return;
+      const periods = d.Period_asArray || d.Period;
+      const periodCount = Array.isArray(periods) ? periods.length : periods ? 1 : 0;
+      let text: string;
+      let note: string | undefined;
+      try {
+        text = JSON.stringify(d, null, 2);
+        note = "parsed model (dash.js does not expose raw XML)";
+      } catch {
+        text = "(parsed manifest could not be serialized)";
+        note = "raw XML unavailable";
+      }
+      cb.onManifest({ text, format: "dash", periodCount, note });
+    });
+    player.on(ev.FRAGMENT_LOADING_COMPLETED, (e: any) => {
+      const r = e?.request;
+      if (!r) return;
+      const dur =
+        r.requestStartDate && r.requestEndDate
+          ? new Date(r.requestEndDate).getTime() -
+            new Date(r.requestStartDate).getTime()
+          : undefined;
+      cb.onNetwork({
+        time: new Date(),
+        kind: r.type === "InitializationSegment" ? "init" : "segment",
+        mediaType: r.mediaType,
+        url: r.url,
+        bytes: r.bytesLoaded || undefined,
+        durationMs: dur,
+      });
+    });
+
+    statsIv = setInterval(() => {
+      if (!player) return;
+      try {
+        const q = player.getQualityFor("video");
+        const brs = player.getBitrateInfoListFor
+          ? player.getBitrateInfoListFor("video")
+          : null;
+        const patch: any = {};
+        if (brs && brs[q]) {
+          patch.bitrate = brs[q].bitrate;
+        }
+        const avg = player.getAverageThroughput
+          ? player.getAverageThroughput("video")
+          : null;
+        if (avg && avg > 0) patch.bw = avg * 1000;
+        cb.onMetrics(patch);
+      } catch {
+        /* noop */
+      }
+    }, 1000);
+
+    cb.onLog("info", "Attaching source: " + cfg.url);
+    player.attachSource(cfg.url);
+  }
+
+  function destroy() {
+    if (statsIv) {
+      clearInterval(statsIv);
+      statsIv = null;
+    }
+    try {
+      if (player?.reset) player.reset();
+    } catch {
+      /* noop */
+    }
+    player = null;
+  }
+
+  return { load, destroy };
+}

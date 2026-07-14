@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(curl -s -o /dev/null -w \"dev: %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(ares-novacom --help)",
+      "Bash(expect -c ' *)",
+      "Read(//Users/javier.gomez@agiletv.com/.ssh/**)",
+      "Bash(ares-device -i -d lgtv)",
+      "Bash(ares-launch -d lgtv --close com.streamprobe.app)",
+      "Bash(ares-launch -d lgtv com.streamprobe.app)",
+      "Bash(ipconfig getifaddr *)",
+      "Bash(curl -s -o /dev/null -w \"localhost:3001/ -> %{http_code}\\\\n\" -m 5 http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"192.168.1.176:3001/ -> %{http_code}\\\\n\" -m 5 http://192.168.1.176:3001/)",
+      "Bash(lsof -nP -iTCP:3001 -sTCP:LISTEN)",
+      "Bash(lsof -nP -iTCP:3001 -sTCP:LISTEN -t)",
+      "Bash(xargs kill)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(echo \"puerto 3001 tras kill: $\\(lsof -nP -iTCP:3001 -sTCP:LISTEN -t || echo libre\\)\")",
+      "Bash(rm -rf .next/cache)",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /dev/null -w \"localhost:3001/ -> %{http_code}\\\\n\" -m 8 http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"192.168.1.176:3001/ -> %{http_code}\\\\n\" -m 8 http://192.168.1.176:3001/)",
+      "Bash(ares-launch -d lgtv --running)"
+    ]
+  }
+}
