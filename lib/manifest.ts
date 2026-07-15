@@ -15,6 +15,35 @@ export function detectFormatFromText(
   return format;
 }
 
+/**
+ * One track's (video or audio) SegmentTimeline within a period, reduced to what
+ * a continuity/consistency check needs: media-time edges and any internal
+ * gap/overlap. *Ticks values are in `timescale` units; *Sec are presentation
+ * seconds. Used to verify the multiperiod→one-period stitch is clean.
+ */
+export interface TrackTimeline {
+  timescale: number;
+  pto: number; // presentationTimeOffset (ticks)
+  firstTick: number; // first S@t
+  lastEndTick: number; // last segment end = t + Σ d
+  segments: number;
+  estimatedToEnd: boolean; // an r<0 (repeat-to-end) entry was present
+  // Presentation-time edges: Period@start + (tick − pto)/timescale.
+  firstSec?: number;
+  lastSec?: number;
+  // Gaps/overlaps between consecutive S entries, in presentation seconds
+  // (positive = hole, negative = overlap). Empty when the timeline is clean —
+  // this is where a bad stitch (t jumps instead of continuing) shows up.
+  internalBreaks: { afterSeg: number; deltaSec: number }[];
+  // The raw <S> rows, as written in the MPD. `startTick` is the resolved start
+  // (an implicit S continues from the previous one); `r` is the @r repeat count
+  // (0 when absent, −1 for repeat-to-end); `explicitT` = @t was present.
+  entries: { startTick: number; d: number; r: number; explicitT: boolean }[];
+}
+
+/** @deprecated alias kept for older imports */
+export type VideoTimeline = TrackTimeline;
+
 /** Per-period breakdown of a DASH MPD. */
 export interface DashPeriod {
   index: number;
@@ -30,6 +59,23 @@ export interface DashPeriod {
   scte35Events: number;
   hasScte35: boolean;
   gapBefore?: number; // seconds gap from previous period's end
+  timeline?: TrackTimeline; // video SegmentTimeline edges (for continuity checks)
+  audioTimeline?: TrackTimeline; // audio SegmentTimeline edges
+  // Video/audio presentation-start skew (audioFirstSec − videoFirstSec), and
+  // end skew. A large skew = the two tracks don't line up after a stitch.
+  vaStartSkewSec?: number;
+  vaEndSkewSec?: number;
+}
+
+/** Result of checking whether two adjacent content segments/periods line up. */
+export interface Continuity {
+  continuous: boolean;
+  gapSec: number; // video presentation-time gap at the seam (+hole / −overlap), 0 = perfect
+  audioGapSec?: number; // same, for audio
+  timescaleChanged: boolean;
+  ptoResetSec?: number; // if the media clock jumped independent of the seam
+  codecChanged: boolean;
+  reasons: string[]; // human-readable notes on what breaks (empty if continuous)
 }
 
 export interface DashInfo {
@@ -74,55 +120,155 @@ export function parseIsoDuration(v?: string | null): number | undefined {
 const SCTE_RE = /scte(?:[-_:]?35)/i;
 
 /**
- * Derive a period's media duration by summing its SegmentTimeline (used when
- * Period@duration is absent, as in live/dynamic MPDs). Returns seconds plus a
- * flag when an `r<0` (repeat-to-end) entry made the sum an estimate.
+ * Extract the SegmentTimeline of one track (video or audio) in a period:
+ * media-time edges, timescale / presentationTimeOffset, and any internal
+ * gap/overlap between consecutive S entries. `periodStart` (Period@start
+ * seconds) anchors the presentation-time edges. Returns undefined when the
+ * period has no matching SegmentTimeline.
  */
-function timelineDuration(periodEl: Element): {
-  dur?: number;
-  estimated: boolean;
-} {
-  const templates = Array.from(periodEl.getElementsByTagName("*")).filter(
-    (el) =>
-      el.localName === "SegmentTemplate" &&
-      Array.from(el.children).some((c) => c.localName === "SegmentTimeline")
-  );
-  if (!templates.length) return { estimated: false };
-
-  const isVideo = (el: Element): boolean => {
+function extractTimeline(
+  periodEl: Element,
+  kind: "video" | "audio",
+  periodStart?: number
+): TrackTimeline | undefined {
+  const trackOf = (el: Element): "video" | "audio" | "other" => {
     let n: Element | null = el;
     while (n) {
       if (n.localName === "AdaptationSet") {
         const m = n.getAttribute("mimeType") || n.getAttribute("contentType") || "";
-        return /video/i.test(m);
+        if (/video/i.test(m)) return "video";
+        if (/audio/i.test(m)) return "audio";
+        return "other";
       }
       n = n.parentElement;
     }
-    return false;
+    return "other";
   };
 
-  const tmpl = templates.find(isVideo) || templates[0];
+  const templates = Array.from(periodEl.getElementsByTagName("*")).filter(
+    (el) =>
+      el.localName === "SegmentTemplate" &&
+      Array.from(el.children).some((c) => c.localName === "SegmentTimeline") &&
+      trackOf(el) === kind
+  );
+  if (!templates.length) return undefined;
+
+  const tmpl = templates[0];
   const timescale = parseInt(tmpl.getAttribute("timescale") || "1", 10) || 1;
+  const pto = parseFloat(tmpl.getAttribute("presentationTimeOffset") || "0") || 0;
   const timeline = Array.from(tmpl.children).find(
     (c) => c.localName === "SegmentTimeline"
   );
-  if (!timeline) return { estimated: false };
+  if (!timeline) return undefined;
 
-  let ticks = 0;
-  let estimated = false;
+  const base = periodStart ?? 0;
+  const toSec = (tick: number) => base + (tick - pto) / timescale;
+
+  let cursor: number | null = null; // running media tick position
+  let firstTick: number | null = null;
+  let estimatedToEnd = false;
+  let segments = 0;
+  const internalBreaks: { afterSeg: number; deltaSec: number }[] = [];
+  const entries: { startTick: number; d: number; r: number; explicitT: boolean }[] = [];
+
   for (const s of Array.from(timeline.children)) {
     if (s.localName !== "S") continue;
+    const tAttr = s.getAttribute("t");
     const d = parseFloat(s.getAttribute("d") || "0");
     const rAttr = s.getAttribute("r");
+    const r = rAttr != null ? parseInt(rAttr, 10) : 0;
     let count = 1;
     if (rAttr != null) {
-      const r = parseInt(rAttr, 10);
       if (r >= 0) count = r + 1;
-      else estimated = true; // repeat-to-end: exact count unknown here
+      else estimatedToEnd = true; // repeat-to-end: exact count unknown
     }
-    ticks += d * count;
+    // An explicit @t that doesn't match the running cursor is a gap/overlap.
+    if (tAttr != null) {
+      const t = parseFloat(tAttr);
+      if (cursor != null && Math.abs(t - cursor) > 1) {
+        internalBreaks.push({ afterSeg: segments, deltaSec: (t - cursor) / timescale });
+      }
+      cursor = t;
+    }
+    if (cursor == null) cursor = 0;
+    if (firstTick == null) firstTick = cursor;
+    entries.push({ startTick: cursor, d, r, explicitT: tAttr != null });
+    cursor += d * (count < 1 ? 1 : count);
+    segments += count;
   }
-  return { dur: ticks / timescale, estimated };
+
+  if (firstTick == null || cursor == null) return undefined;
+  return {
+    timescale,
+    pto,
+    firstTick,
+    lastEndTick: cursor,
+    segments,
+    estimatedToEnd,
+    firstSec: toSec(firstTick),
+    lastSec: toSec(cursor),
+    internalBreaks,
+    entries,
+  };
+}
+
+/**
+ * Check whether the content resuming after an ad lines up with the content
+ * before it — the "does the SegmentTimeline concord?" test. `prev` is the
+ * timeline captured at/just before SCTE-OUT, `next` the one after SCTE-IN.
+ * A non-zero gap, a timescale change or a codec change at the seam is exactly
+ * where an old TV MSE (no gap-jumping) stalls.
+ */
+export function checkContinuity(
+  prev: { timeline?: TrackTimeline; audioTimeline?: TrackTimeline; videoCodecs: string[] },
+  next: { timeline?: TrackTimeline; audioTimeline?: TrackTimeline; videoCodecs: string[] }
+): Continuity | null {
+  const a = prev.timeline;
+  const b = next.timeline;
+  if (!a || !b) return null;
+
+  const gapSec = (b.firstSec ?? 0) - (a.lastSec ?? 0);
+  const aa = prev.audioTimeline;
+  const ab = next.audioTimeline;
+  const audioGapSec =
+    aa?.lastSec != null && ab?.firstSec != null ? ab.firstSec - aa.lastSec : undefined;
+  const timescaleChanged = a.timescale !== b.timescale;
+  // Only a codec *family* change (e.g. avc1→hvc1) forces an MSE SourceBuffer
+  // codec switch (the thing old TVs stall on). A profile/level bump within the
+  // same fourcc (avc1.4D401E→avc1.4D401F) is normal ABR, not a discontinuity.
+  const family = (list: string[]) =>
+    [...new Set(list.map((c) => c.split(".")[0].toLowerCase()))].sort().join(",");
+  const famPrev = family(prev.videoCodecs);
+  const famNext = family(next.videoCodecs);
+  const codecChanged = !!famPrev && !!famNext && famPrev !== famNext;
+  // A PTO reset that isn't explained by the seam gap means the media clock
+  // jumped — the classic trigger for a buffered-range discontinuity.
+  const ptoResetSec =
+    a.timescale === b.timescale ? undefined : (b.pto - a.pto) / b.timescale;
+
+  const reasons: string[] = [];
+  if (Math.abs(gapSec) > 0.05)
+    reasons.push(
+      `${gapSec > 0 ? "hueco" : "solape"} de vídeo de ${Math.abs(gapSec).toFixed(3)}s en la costura`
+    );
+  if (audioGapSec != null && Math.abs(audioGapSec) > 0.05)
+    reasons.push(
+      `${audioGapSec > 0 ? "hueco" : "solape"} de audio de ${Math.abs(audioGapSec).toFixed(3)}s`
+    );
+  if (timescaleChanged)
+    reasons.push(`timescale cambia ${a.timescale} → ${b.timescale}`);
+  if (codecChanged)
+    reasons.push(`familia de codec de vídeo cambia ${famPrev} → ${famNext}`);
+
+  return {
+    continuous: reasons.length === 0,
+    gapSec,
+    audioGapSec,
+    timescaleChanged,
+    ptoResetSec,
+    codecChanged,
+    reasons,
+  };
 }
 
 /** Extract period structure and SCTE-35 markers from a DASH MPD. */
@@ -178,19 +324,30 @@ export function parseDashInfo(xml: string): DashInfo | null {
     totalStreams += scteStreams;
     totalEvents += scte35Events;
 
+    const periodStart = parseIsoDuration(p.getAttribute("start"));
+    const timeline = extractTimeline(p, "video", periodStart);
+    const audioTimeline = extractTimeline(p, "audio", periodStart);
     const explicitDur = parseIsoDuration(p.getAttribute("duration"));
     let mediaDuration: number | undefined;
     let durationEstimated: boolean | undefined;
-    if (explicitDur == null) {
-      const td = timelineDuration(p);
-      mediaDuration = td.dur;
-      durationEstimated = td.dur != null ? td.estimated : undefined;
+    if (explicitDur == null && timeline) {
+      mediaDuration = (timeline.lastEndTick - timeline.firstTick) / timeline.timescale;
+      durationEstimated = timeline.estimatedToEnd;
     }
+
+    // Video/audio skew: how far apart the two tracks start and end. After a
+    // clean stitch they should line up (≈0); a big skew stalls playback.
+    let vaStartSkewSec: number | undefined;
+    let vaEndSkewSec: number | undefined;
+    if (timeline?.firstSec != null && audioTimeline?.firstSec != null)
+      vaStartSkewSec = audioTimeline.firstSec - timeline.firstSec;
+    if (timeline?.lastSec != null && audioTimeline?.lastSec != null)
+      vaEndSkewSec = audioTimeline.lastSec - timeline.lastSec;
 
     return {
       index,
       id: p.getAttribute("id") || undefined,
-      start: parseIsoDuration(p.getAttribute("start")),
+      start: periodStart,
       duration: explicitDur,
       mediaDuration,
       durationEstimated,
@@ -199,6 +356,10 @@ export function parseDashInfo(xml: string): DashInfo | null {
       eventStreams: eventStreamEls.length,
       scte35Events,
       hasScte35: scteStreams > 0,
+      timeline,
+      audioTimeline,
+      vaStartSkewSec,
+      vaEndSkewSec,
     };
   });
 

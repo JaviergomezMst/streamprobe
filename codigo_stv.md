@@ -35,6 +35,20 @@ Next.js 14 (App Router, TypeScript, Tailwind), portada desde un `streamprobe.htm
   **Añade un salto → afecta a las métricas** (opt-in: solo si rellenas algún campo).
 - **Lista de manifests**: captura cada MPD (single/multiperiod badge) + **tabla de periods** (id/start/dur/codecs,
   ⚠gap, ⤳ cambio de codec, duración derivada del SegmentTimeline).
+- **Check de consistencia de timestamps (conversión multiperiod→one-period)** (`lib/manifest.ts`:
+  `extractTimeline` vídeo+audio, `checkContinuity`; columna "timeline (media)" con líneas V/A + filas de costura
+  en la tabla de periods): extrae los bordes del SegmentTimeline de **vídeo y audio** (timescale, PTO, primer `t`,
+  fin del último segmento en tiempo de presentación) y verifica que los `t`/`d` sean **monótonos y sin
+  huecos/solapes**. Detecta: (1) **salto de timestamps dentro de un period** (`internalBreaks`) — el fallo típico
+  al aplanar multiperiod→one-period cuando el `t` no continúa tras la publi; (2) **discontinuidad en la costura**
+  entre periods (hueco/solape de vídeo o audio, cambio de timescale, o cambio de **familia** de codec avc1→hvc1
+  —ignora cambios de perfil dentro de avc1); (3) **desalineo vídeo/audio** (`vaStartSkewSec`/`vaEndSkewSec`).
+  Badges resumen + alerta **en vivo** en el log SCTE (de-dupada). Validado con jsdom contra el MPD real +
+  sintéticos (cosido limpio, cosido malo con salto de 71.68s, audio desalineado 0.5s).
+- **Visor del bloque SegmentTimeline**: en la tabla de periods, **pinchar un period** despliega su bloque
+  `SegmentTimeline` de vídeo y audio — las filas crudas `<S t d r>` (el parser guarda `timeline.entries`) con
+  los derivados: nº de segmentos (r+1), duración/seg, y el span en tiempo de presentación (inicio→fin). Marca
+  en rojo la fila donde el `t` **salta** (no continúa del segmento anterior). `t` implícito se señala con `*`.
 - **Instrumentación SCTE-35** (Shaka: `emsg` + `timelineregion`).
 - **Eventos gap/stall** de Shaka (`gapjumped` / `stalldetected`) con buffered ranges.
 - **Panel Buffer en vivo** (rangos, gaps, buffer-ahead, behind-live-edge).

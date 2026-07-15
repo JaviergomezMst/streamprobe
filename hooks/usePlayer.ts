@@ -5,6 +5,7 @@ import { createEngine } from "@/lib/engines";
 import { fmtBps, fmtMs } from "@/lib/fmt";
 import { ENGINES } from "@/lib/engines/registry";
 import {
+  checkContinuity,
   countPeriods,
   detectFormatFromText,
   parseDashInfo,
@@ -90,6 +91,7 @@ export function usePlayer(
   const [manifestLoading, setManifestLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const manifestSeqRef = useRef(0);
+  const seamSigRef = useRef("");
   const urlRef = useRef("");
   const [overlayHidden, setOverlayHidden] = useState(false);
   const [buffered, setBuffered] = useState<BufferedState>(EMPTY_BUFFERED);
@@ -143,8 +145,37 @@ export function usePlayer(
       };
       // Newest first; keep a large history so long sessions stay reviewable.
       setManifests((prev) => [entry, ...prev].slice(0, 1000));
+
+      // Live timestamp-consistency alert (de-duped). Catches both cases of the
+      // multiperiod→one-period conversion going wrong:
+      //  - multiperiod: content doesn't concord across an ad-break seam;
+      //  - one-period: timestamps jump inside the stitched timeline, or the
+      //    video/audio tracks fall out of alignment.
+      if (dash) {
+        const issues: string[] = [];
+        for (let i = 1; i < dash.periods.length; i++) {
+          const c = checkContinuity(dash.periods[i - 1], dash.periods[i]);
+          if (c && !c.continuous) issues.push(`costura P${i - 1}→P${i}: ${c.reasons.join("; ")}`);
+        }
+        for (const p of dash.periods) {
+          const vb = p.timeline?.internalBreaks ?? [];
+          const ab = p.audioTimeline?.internalBreaks ?? [];
+          if (vb.length) issues.push(`P${p.index} salto de timestamps en vídeo (${vb.map((b) => b.deltaSec.toFixed(2) + "s").join(",")})`);
+          if (ab.length) issues.push(`P${p.index} salto de timestamps en audio (${ab.map((b) => b.deltaSec.toFixed(2) + "s").join(",")})`);
+          if (Math.abs(p.vaStartSkewSec ?? 0) > 0.05 || Math.abs(p.vaEndSkewSec ?? 0) > 0.05)
+            issues.push(`P${p.index} vídeo/audio desalineados ${(p.vaStartSkewSec ?? 0).toFixed(2)}s`);
+        }
+        const sig = `${dash.periods.length}|${issues.join(" | ")}`;
+        if (sig !== seamSigRef.current) {
+          seamSigRef.current = sig;
+          if (issues.length)
+            log("scte", `⚠ Inconsistencia de timestamps (posible stall en TV): ${issues.join(" · ")}`);
+          else if (dash.periods.length > 1)
+            log("scte", `Multiperiod (${dash.periods.length}) — timestamps consistentes`);
+        }
+      }
     },
-    []
+    [log]
   );
 
   const fetchManifest = useCallback(

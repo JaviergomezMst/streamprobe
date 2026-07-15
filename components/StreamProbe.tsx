@@ -29,7 +29,14 @@ function makeConfig(engine: EngineId): PanelConfig {
       returnToLiveWindow: true,
       stalledMinDuration: 1,
     },
-    net: { origin: "www.mediasetinfinity.es", referer: "", userAgent: "" },
+    // App-faithful CDN headers: Akamai now denies (403) manifest/segment
+    // requests without a proper Origin. Send the same Origin+Referer the real
+    // Mediaset app sends, with scheme, so requests aren't WAF-blocked.
+    net: {
+      origin: "https://www.mediasetinfinity.es",
+      referer: "https://www.mediasetinfinity.es/",
+      userAgent: "",
+    },
     deviceUserAgent: "",
   };
 }
@@ -37,7 +44,6 @@ function makeConfig(engine: EngineId): PanelConfig {
 export default function StreamProbe() {
   const [mode, setMode] = useState<"single" | "compare">("single");
   const [view, setView] = useState<"player" | "deploy">("player");
-  const [sideTab, setSideTab] = useState<"A" | "B">("A");
   const [configA, setConfigA] = useState<PanelConfig>(() => makeConfig("shaka"));
   const [configB, setConfigB] = useState<PanelConfig>(() => makeConfig("dashjs"));
 
@@ -53,7 +59,6 @@ export default function StreamProbe() {
   const onMode = (m: "single" | "compare") => {
     if (m === "single" && playerB.running) playerB.stop();
     setMode(m);
-    if (m === "compare") setSideTab("A");
   };
 
   const patchConfig = (panel: "A" | "B") => (patch: Partial<PanelConfig>) =>
@@ -61,6 +66,16 @@ export default function StreamProbe() {
 
   const handleLoad = (panel: "A" | "B") =>
     players[panel].load(configs[panel].engine, toLoadConfig(configs[panel]));
+
+  const loadBoth = () => {
+    handleLoad("A");
+    handleLoad("B");
+  };
+  const stopBoth = () => {
+    playerA.stop();
+    playerB.stop();
+  };
+  const anyRunning = playerA.running || playerB.running;
 
   return (
     <div className="flex h-screen flex-col">
@@ -72,49 +87,52 @@ export default function StreamProbe() {
         {/* Sidebar */}
         <div className="flex w-[290px] flex-shrink-0 flex-col overflow-hidden border-r border-bd bg-sf1">
           {mode === "compare" && (
-            <div className="flex flex-shrink-0 border-b border-bd">
-              {(["A", "B"] as const).map((p) => {
-                const on = sideTab === p;
-                const cls =
-                  p === "A"
-                    ? on
-                      ? "text-ga border-ga"
-                      : "text-tx3 border-transparent"
-                    : on
-                      ? "text-gb border-gb"
-                      : "text-tx3 border-transparent";
-                return (
-                  <div
-                    key={p}
-                    onClick={() => setSideTab(p)}
-                    className={`flex-1 cursor-pointer border-b-2 py-[9px] text-center text-[11px] font-semibold uppercase tracking-[.06em] transition ${cls}`}
-                  >
-                    Player {p}
-                  </div>
-                );
-              })}
+            <div className="flex flex-shrink-0 items-center gap-2 border-b border-bd px-2 py-2">
+              <button
+                onClick={loadBoth}
+                className="flex-1 rounded-md bg-gradient-to-r from-ga to-gb py-2 text-[12px] font-semibold text-white transition hover:brightness-110"
+                title="Cargar A y B a la vez"
+              >
+                ▶ Load A + B
+              </button>
+              <button
+                onClick={stopBoth}
+                disabled={!anyRunning}
+                className="rounded-md border border-bd bg-sf2 px-3 py-2 text-[12px] font-semibold text-tx2 transition hover:border-bd2 hover:text-tx1 disabled:opacity-40"
+                title="Parar ambos"
+              >
+                ■ Both
+              </button>
             </div>
           )}
           <div className="flex-1 overflow-y-auto">
-            {(mode === "single" || sideTab === "A") && (
-              <ConfigPanel
-                panel="A"
-                config={configA}
-                running={playerA.running}
-                onChange={patchConfig("A")}
-                onLoad={() => handleLoad("A")}
-                onStop={playerA.stop}
-              />
+            {mode === "compare" && (
+              <div className="sticky top-0 z-10 border-b border-bd bg-sf2/95 px-3 py-[6px] text-[11px] font-semibold uppercase tracking-[.06em] text-ga backdrop-blur">
+                ● Player A
+              </div>
             )}
-            {mode === "compare" && sideTab === "B" && (
-              <ConfigPanel
-                panel="B"
-                config={configB}
-                running={playerB.running}
-                onChange={patchConfig("B")}
-                onLoad={() => handleLoad("B")}
-                onStop={playerB.stop}
-              />
+            <ConfigPanel
+              panel="A"
+              config={configA}
+              running={playerA.running}
+              onChange={patchConfig("A")}
+              onLoad={() => handleLoad("A")}
+              onStop={playerA.stop}
+            />
+            {mode === "compare" && (
+              <>
+                <div className="sticky top-0 z-10 border-y border-bd bg-sf2/95 px-3 py-[6px] text-[11px] font-semibold uppercase tracking-[.06em] text-gb backdrop-blur">
+                  ● Player B
+                </div>
+                <ConfigPanel
+                  panel="B"
+                  config={configB}
+                  running={playerB.running}
+                  onChange={patchConfig("B")}
+                  onLoad={() => handleLoad("B")}
+                  onStop={playerB.stop}
+                />
+              </>
             )}
           </div>
         </div>
