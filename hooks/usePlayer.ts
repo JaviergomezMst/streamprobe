@@ -56,6 +56,12 @@ const EMPTY_METRICS: Metrics = {
   state: "idle",
 };
 
+// Rolling-window caps: on a long live session every log grows unbounded (netLog
+// gets an entry per segment request), which eventually freezes the UI and makes
+// it look like capture "stopped". Keep the newest N and drop the rest.
+const LOG_LIMIT = 2000; // events / abr / scte / network
+const MANIFEST_LIMIT = 2000; // captured MPDs (each holds full text) — newest kept
+
 export interface UsePlayer {
   metrics: Metrics;
   state: PlayerState;
@@ -117,9 +123,9 @@ export function usePlayer(
 
   const log = useCallback((type: LogType, msg: string) => {
     const e: LogEntry = { time: new Date(), type, msg };
-    setEvLog((prev) => [...prev, e]);
-    if (type === "abr") setAbrLog((prev) => [...prev, e]);
-    if (type === "scte") setScteLog((prev) => [...prev, e]);
+    setEvLog((prev) => [...prev, e].slice(-LOG_LIMIT));
+    if (type === "abr") setAbrLog((prev) => [...prev, e].slice(-LOG_LIMIT));
+    if (type === "scte") setScteLog((prev) => [...prev, e].slice(-LOG_LIMIT));
   }, []);
 
   const pushManifest = useCallback(
@@ -144,7 +150,7 @@ export function usePlayer(
         dash,
       };
       // Newest first; keep a large history so long sessions stay reviewable.
-      setManifests((prev) => [entry, ...prev].slice(0, 1000));
+      setManifests((prev) => [entry, ...prev].slice(0, MANIFEST_LIMIT));
 
       // Live timestamp-consistency alert (de-duped). Catches both cases of the
       // multiperiod→one-period conversion going wrong:
@@ -363,7 +369,7 @@ export function usePlayer(
         },
         onMetrics: patchMetrics,
         onState: setState,
-        onNetwork: (entry) => setNetLog((prev) => [...prev, entry]),
+        onNetwork: (entry) => setNetLog((prev) => [...prev, entry].slice(-LOG_LIMIT)),
         onManifest: (m) => pushManifest(m, "engine"),
       });
       ctrlRef.current = ctrl;

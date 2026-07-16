@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fmtBytes, fmtTime } from "@/lib/fmt";
 import {
   checkContinuity,
@@ -404,6 +404,73 @@ function ManifestBody({ text, q }: { text: string; q: string }) {
   );
 }
 
+/**
+ * One manifest row. Memoized so that appending a new capture only renders the
+ * new row (and any toggled row) — not the whole list. This keeps the list
+ * smooth even with a couple thousand captured manifests.
+ */
+const ManifestRow = memo(function ManifestRow({
+  m,
+  open,
+  query,
+  onToggle,
+}: {
+  m: CapturedManifest;
+  open: boolean;
+  query: string;
+  onToggle: (id: number) => void;
+}) {
+  const matches = query
+    ? m.text.split("\n").filter((l) => l.toLowerCase().includes(query.toLowerCase())).length
+    : 0;
+  const badge =
+    m.periodCount != null
+      ? m.isMultiperiod
+        ? { txt: `MULTIPERIOD · ${m.periodCount}`, cls: "bg-warn/20 text-warn" }
+        : { txt: "SINGLE PERIOD", cls: "bg-ga/[.12] text-ga" }
+      : { txt: m.format.toUpperCase(), cls: "bg-sf2 text-tx2" };
+
+  return (
+    <div className="border-b border-bd">
+      <div
+        onClick={() => onToggle(m.id)}
+        className="flex cursor-pointer items-center gap-2 px-2 py-[6px] hover:bg-sf2"
+      >
+        <span className="w-[10px] flex-shrink-0 text-tx3">{open ? "▾" : "▸"}</span>
+        <span className="w-[80px] flex-shrink-0 font-mono text-[10px] text-tx3">
+          {fmtTime(m.time)}
+        </span>
+        <span
+          className={`flex-shrink-0 rounded px-2 py-[1px] font-mono text-[9px] font-semibold ${badge.cls}`}
+        >
+          {badge.txt}
+        </span>
+        {m.dash?.hasScte35 && (
+          <span className="flex-shrink-0 rounded bg-[#22d3ee]/20 px-[5px] py-[1px] font-mono text-[9px] font-semibold text-[#22d3ee]">
+            SCTE-35
+          </span>
+        )}
+        <span className="flex-shrink-0 font-mono text-[9px] uppercase text-tx3">{m.source}</span>
+        {m.bytes != null && (
+          <span className="flex-shrink-0 font-mono text-[9px] text-tx3">
+            {fmtBytes(m.bytes, "")}
+          </span>
+        )}
+        {query && (
+          <span className="ml-auto flex-shrink-0 font-mono text-[9px] text-ga">
+            {matches} match{matches === 1 ? "" : "es"}
+          </span>
+        )}
+      </div>
+      {m.note && open && (
+        <div className="px-2 pb-1 font-mono text-[9px] text-tx3">⚠ {m.note}</div>
+      )}
+      {open && m.dash && m.dash.periods.length > 0 && <PeriodsTable dash={m.dash} />}
+      {open && <ManifestBody text={m.text} q={query} />}
+    </div>
+  );
+});
+
 export default function ManifestView({ manifests, error, loading }: Props) {
   const [q, setQ] = useState("");
   const [openIds, setOpenIds] = useState<Set<number>>(new Set());
@@ -418,13 +485,14 @@ export default function ManifestView({ manifests, error, loading }: Props) {
     if (manifests.length === 0) initRef.current = false;
   }, [manifests]);
 
-  const toggle = (id: number) =>
+  const toggle = useCallback((id: number) => {
     setOpenIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+  }, []);
 
   if (loading && manifests.length === 0) {
     return <div className="p-5 text-center text-tx3">Fetching manifest…</div>;
@@ -461,69 +529,15 @@ export default function ManifestView({ manifests, error, loading }: Props) {
 
       {/* List (newest first) */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {manifests.map((m) => {
-          const open = openIds.has(m.id);
-          const matches = query
-            ? m.text
-                .split("\n")
-                .filter((l) => l.toLowerCase().includes(query.toLowerCase()))
-                .length
-            : 0;
-          const badge =
-            m.periodCount != null
-              ? m.isMultiperiod
-                ? { txt: `MULTIPERIOD · ${m.periodCount}`, cls: "bg-warn/20 text-warn" }
-                : { txt: "SINGLE PERIOD", cls: "bg-ga/[.12] text-ga" }
-              : { txt: m.format.toUpperCase(), cls: "bg-sf2 text-tx2" };
-
-          return (
-            <div key={m.id} className="border-b border-bd">
-              <div
-                onClick={() => toggle(m.id)}
-                className="flex cursor-pointer items-center gap-2 px-2 py-[6px] hover:bg-sf2"
-              >
-                <span className="w-[10px] flex-shrink-0 text-tx3">
-                  {open ? "▾" : "▸"}
-                </span>
-                <span className="w-[80px] flex-shrink-0 font-mono text-[10px] text-tx3">
-                  {fmtTime(m.time)}
-                </span>
-                <span
-                  className={`flex-shrink-0 rounded px-2 py-[1px] font-mono text-[9px] font-semibold ${badge.cls}`}
-                >
-                  {badge.txt}
-                </span>
-                {m.dash?.hasScte35 && (
-                  <span className="flex-shrink-0 rounded bg-[#22d3ee]/20 px-[5px] py-[1px] font-mono text-[9px] font-semibold text-[#22d3ee]">
-                    SCTE-35
-                  </span>
-                )}
-                <span className="flex-shrink-0 font-mono text-[9px] uppercase text-tx3">
-                  {m.source}
-                </span>
-                {m.bytes != null && (
-                  <span className="flex-shrink-0 font-mono text-[9px] text-tx3">
-                    {fmtBytes(m.bytes, "")}
-                  </span>
-                )}
-                {query && (
-                  <span className="ml-auto flex-shrink-0 font-mono text-[9px] text-ga">
-                    {matches} match{matches === 1 ? "" : "es"}
-                  </span>
-                )}
-              </div>
-              {m.note && open && (
-                <div className="px-2 pb-1 font-mono text-[9px] text-tx3">
-                  ⚠ {m.note}
-                </div>
-              )}
-              {open && m.dash && m.dash.periods.length > 0 && (
-                <PeriodsTable dash={m.dash} />
-              )}
-              {open && <ManifestBody text={m.text} q={q} />}
-            </div>
-          );
-        })}
+        {manifests.map((m) => (
+          <ManifestRow
+            key={m.id}
+            m={m}
+            open={openIds.has(m.id)}
+            query={query}
+            onToggle={toggle}
+          />
+        ))}
       </div>
     </div>
   );
