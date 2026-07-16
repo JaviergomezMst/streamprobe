@@ -40,6 +40,7 @@ export default function ConfigPanel({
   const [advOpen, setAdvOpen] = useState(false);
   const [verify, setVerify] = useState<Record<string, string> | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [netStash, setNetStash] = useState<NetOverrides | null>(null);
   const isA = panel === "A";
   const btnLoad = isA ? "bg-ga" : "bg-gb";
   const focusCls = isA ? "focus:border-ga" : "focus:border-gb";
@@ -56,6 +57,23 @@ export default function ConfigPanel({
     !!config.net.origin.trim() ||
     !!config.net.referer.trim() ||
     !!config.net.userAgent.trim();
+
+  // One-click proxy off/on: clears Origin/Referer/UA (proxy off) stashing them,
+  // and restores them on re-enable. Use "off" for non-Mediaset / CORS streams.
+  const toggleProxy = () => {
+    if (netActive) {
+      setNetStash({ ...config.net });
+      setNet({ origin: "", referer: "", userAgent: "" });
+    } else {
+      setNet(
+        netStash ?? {
+          origin: "https://www.mediasetinfinity.es",
+          referer: "https://www.mediasetinfinity.es/",
+          userAgent: "",
+        }
+      );
+    }
+  };
 
   const verifyHeaders = async () => {
     setVerifying(true);
@@ -208,6 +226,21 @@ export default function ConfigPanel({
               PROXY ON
             </span>
           )}
+          <button
+            onClick={toggleProxy}
+            className={`ml-auto rounded-[4px] border px-[8px] py-[2px] font-mono text-[10px] transition ${
+              netActive
+                ? "border-warn/40 bg-warn/10 text-warn hover:bg-warn/20"
+                : "border-bd bg-sf2 text-tx2 hover:border-ga hover:text-ga"
+            }`}
+            title={
+              netActive
+                ? "Vaciar Origin/Referer/UA → proxy OFF (para streams no-Mediaset / con CORS)"
+                : "Restaurar Origin/Referer → proxy ON (necesario para Mediaset)"
+            }
+          >
+            {netActive ? "Desactivar proxy" : "Activar proxy"}
+          </button>
         </div>
         <div className="mb-[9px]">
           <label className="mb-[3px] block text-[11px] text-tx2">Origin</label>
@@ -299,6 +332,22 @@ export default function ConfigPanel({
                   <div className="mb-[10px] text-[9px] leading-[1.5] text-tx3">
                     Running Shaka like the SmartTV app: default config + DRM only,
                     no buffer/stall/ABR tuning. Turn off to experiment with settings.
+                  </div>
+                )}
+                {/* Works regardless of Match TV: pins the top rendition. */}
+                <div className="mb-[8px] flex items-center justify-between rounded-[5px] border border-gb/30 bg-gb/[.06] px-[9px] py-2">
+                  <span className="text-[11px] text-tx1">
+                    Fijar calidad máxima (sin ABR)
+                  </span>
+                  <Toggle
+                    checked={config.advanced.lockMaxQuality}
+                    onChange={(v) => setAdvanced({ lockMaxQuality: v })}
+                  />
+                </div>
+                {config.advanced.lockMaxQuality && (
+                  <div className="mb-[10px] text-[9px] leading-[1.5] text-tx3">
+                    Desactiva el ABR y clava la rendición de mayor bitrate — no baja de
+                    calidad. Ojo: si la banda no da, provocará rebuffering en vez de bajar.
                   </div>
                 )}
               </>

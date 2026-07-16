@@ -7,6 +7,63 @@ export function createDashjs(cb: EngineCallbacks): EngineController {
   let player: any = null;
   let dashjs: any = null;
   let statsIv: ReturnType<typeof setInterval> | null = null;
+  const audioMap = new Map<string, any>();
+  const textMap = new Map<string, any>();
+
+  const label = (t: any, fallback: string) =>
+    [t.lang, (t.roles || []).join(",")].filter(Boolean).join(" · ") || fallback;
+
+  function reportTracks() {
+    if (!player) return;
+    try {
+      audioMap.clear();
+      textMap.clear();
+      const curA = player.getCurrentTrackFor?.("audio");
+      const audio = (player.getTracksFor?.("audio") || []).map((t: any) => {
+        const id = String(t.index);
+        audioMap.set(id, t);
+        return {
+          id,
+          lang: t.lang,
+          label: label(t, `Audio ${t.index}`),
+          active: !!curA && curA.index === t.index,
+        };
+      });
+      const textEnabled = player.isTextEnabled?.() ?? false;
+      const curT = player.getCurrentTrackFor?.("text");
+      const text = (player.getTracksFor?.("text") || []).map((t: any) => {
+        const id = String(t.index);
+        textMap.set(id, t);
+        return {
+          id,
+          lang: t.lang,
+          label: label(t, `Sub ${t.index}`),
+          active: textEnabled && !!curT && curT.index === t.index,
+        };
+      });
+      cb.onTracks(audio, text);
+    } catch {
+      /* tracks unavailable */
+    }
+  }
+
+  function selectAudio(id: string) {
+    const t = audioMap.get(id);
+    if (t && player?.setCurrentTrack) player.setCurrentTrack(t);
+  }
+  function selectText(id: string | null) {
+    if (!player) return;
+    if (id === null) {
+      player.enableText?.(false);
+    } else {
+      const t = textMap.get(id);
+      if (t) {
+        player.setCurrentTrack?.(t);
+        player.enableText?.(true);
+      }
+    }
+    reportTracks();
+  }
 
   async function load(video: HTMLVideoElement, cfg: LoadConfig) {
     cb.onLog("info", `Loading dash.js ${cfg.version} (bundled)…`);
@@ -81,7 +138,13 @@ export function createDashjs(cb: EngineCallbacks): EngineController {
     player.on(ev.BUFFER_LOADED, () => cb.onLog("info", "Buffer loaded"));
 
     // Autoplay as soon as playback is possible.
-    player.on(ev.CAN_PLAY, () => autoplay(video, cb.onLog));
+    player.on(ev.CAN_PLAY, () => {
+      reportTracks();
+      autoplay(video, cb.onLog);
+    });
+    ["STREAM_INITIALIZED", "TRACK_CHANGE_RENDERED", "TEXT_TRACKS_ADDED"].forEach((name) => {
+      if (ev[name]) player.on(ev[name], reportTracks);
+    });
 
     // Manifest updates (initial + live refreshes). dash.js exposes a parsed
     // model rather than raw XML, so count periods from it and serialize.
@@ -157,7 +220,9 @@ export function createDashjs(cb: EngineCallbacks): EngineController {
       /* noop */
     }
     player = null;
+    audioMap.clear();
+    textMap.clear();
   }
 
-  return { load, destroy };
+  return { load, destroy, selectAudio, selectText };
 }

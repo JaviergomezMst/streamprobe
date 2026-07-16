@@ -29,6 +29,11 @@ Next.js 14 (App Router, TypeScript, Tailwind), portada desde un `streamprobe.htm
 - Métricas en vivo: join time, buffering, bitrate, **live latency**, dropped frames.
 - Logs por pestañas: **Events / ABR / SCTE-35 / Buffer / Network / Manifest**, con botón **Clear** por pestaña.
 - Autoplay con fallback muted.
+- **Selección de audio y subtítulos** (bajo el vídeo, `components/PlayerPanel.tsx` `TrackBar`): desplegables de
+  pista de **Audio** (idioma/canales) y **Subtítulos** (con opción **Off**). Por engine vía
+  `EngineController.selectAudio/selectText` + callback `onTracks`: Shaka (`selectAudioLanguage` /
+  `selectTextTrack`+`setTextTrackVisibility`), hls.js (`audioTrack`/`subtitleTrack`), dash.js
+  (`setCurrentTrack`/`enableText`), native (`video.audioTracks`/`textTracks`; audio solo en Safari).
 - **DRM** Widevine / PlayReady / FairPlay.
 - **Proxy de cabeceras CDN** (`app/api/proxy/route.ts`): el navegador prohíbe fijar Origin/Referer/User-Agent,
   así que el proxy los inyecta en servidor y los devuelve como `x-sp-sent-*` (botón **Verify** + `hdr✓` en Network).

@@ -28,6 +28,7 @@ function makeConfig(engine: EngineId): PanelConfig {
       audioLang: "",
       returnToLiveWindow: true,
       stalledMinDuration: 1,
+      lockMaxQuality: false,
     },
     // App-faithful CDN headers: Akamai now denies (403) manifest/segment
     // requests without a proper Origin. Send the same Origin+Referer the real

@@ -1,6 +1,7 @@
 import { loadLib } from "./loaders";
 import { autoplay } from "./autoplay";
 import { hasNetOverrides, proxifyUrl, unproxifyUrl } from "@/lib/proxy";
+import { detectFormat } from "@/lib/format";
 import { detectShakaPlatform, setDeviceUserAgent } from "@/lib/deviceEmu";
 import type { EngineCallbacks, EngineController, LoadConfig } from "./types";
 
@@ -8,6 +9,74 @@ export function createShaka(cb: EngineCallbacks): EngineController {
   let player: any = null;
   let statsIv: ReturnType<typeof setInterval> | null = null;
   let curBitrate = 0;
+  const audioSel = new Map<
+    string,
+    { language: string; role?: string; channelsCount?: number; label?: string }
+  >();
+
+  function reportTracks() {
+    if (!player) return;
+    try {
+      audioSel.clear();
+      const audio: any[] = [];
+      for (const v of player.getVariantTracks()) {
+        const roles = (v.audioRoles || []).join(",");
+        const id = `${v.language}|${roles}|${v.channelsCount ?? ""}|${v.label ?? ""}`;
+        let t = audio.find((a) => a.id === id);
+        if (!t) {
+          audioSel.set(id, {
+            language: v.language,
+            role: v.audioRoles?.[0],
+            channelsCount: v.channelsCount,
+            label: v.label,
+          });
+          const parts = [v.language || "und"];
+          if (v.channelsCount) parts.push(`${v.channelsCount}ch`);
+          if (v.label) parts.push(v.label);
+          t = { id, lang: v.language, label: parts.join(" · "), active: false };
+          audio.push(t);
+        }
+        if (v.active) t.active = true;
+      }
+      const visible = player.isTextTrackVisible();
+      const text = player.getTextTracks().map((t: any) => ({
+        id: String(t.id),
+        lang: t.language,
+        label: [t.language || "und", t.label, t.forced ? "forced" : ""]
+          .filter(Boolean)
+          .join(" · "),
+        active: !!t.active && visible,
+      }));
+      cb.onTracks(audio, text);
+    } catch {
+      /* networking/tracks unavailable */
+    }
+  }
+
+  function selectAudio(id: string) {
+    const sel = audioSel.get(id);
+    if (sel && player) {
+      try {
+        player.selectAudioLanguage(sel.language, sel.role, sel.channelsCount, sel.label);
+      } catch {
+        player.selectAudioLanguage(sel.language, sel.role);
+      }
+    }
+  }
+
+  function selectText(id: string | null) {
+    if (!player) return;
+    if (id === null) {
+      player.setTextTrackVisibility(false);
+    } else {
+      const t = player.getTextTracks().find((x: any) => String(x.id) === id);
+      if (t) {
+        player.selectTextTrack(t);
+        player.setTextTrackVisibility(true);
+      }
+    }
+    reportTracks();
+  }
 
   async function load(video: HTMLVideoElement, cfg: LoadConfig) {
     // Emulate a SmartTV UA before Shaka loads so its platform detection engages
@@ -89,6 +158,12 @@ export function createShaka(cb: EngineCallbacks): EngineController {
           };
       }
       cb.onLog("drm", `DRM: ${system.toUpperCase()} → ${licenseUrl}`);
+    }
+
+    // Pin the highest rendition: turn off ABR so it can't drop the quality.
+    if (cfg.advanced.lockMaxQuality) {
+      conf.abr = { enabled: false };
+      cb.onLog("info", "Calidad fijada al máximo (ABR desactivado)");
     }
 
     player.configure(conf);
@@ -266,11 +341,43 @@ export function createShaka(cb: EngineCallbacks): EngineController {
       cb.onMetrics(patch);
     }, 1000);
 
-    cb.onLog("info", "Loading manifest: " + cfg.url);
+    // Audio/subtitle track list — report on load and whenever it changes.
+    ["trackschanged", "adaptation", "variantchanged", "textchanged", "texttrackvisibility"].forEach(
+      (ev) => player.addEventListener(ev, reportTracks)
+    );
+
+    // Tell Shaka the manifest type explicitly. Its own guessing fails on URLs
+    // with no basename before the extension (e.g. Unified Streaming's ".../.m3u8"
+    // or ".../.mpd") → UNABLE_TO_GUESS_MANIFEST_TYPE. Our URL detection handles it.
+    const MIME: Record<string, string> = {
+      dash: "application/dash+xml",
+      hls: "application/x-mpegurl",
+      smooth: "application/vnd.ms-sstr+xml",
+    };
+    const mime = MIME[detectFormat(cfg.url)];
+
+    cb.onLog("info", `Loading manifest: ${cfg.url}${mime ? ` (${mime})` : ""}`);
     try {
-      await player.load(cfg.url);
+      await player.load(cfg.url, null, mime);
       const tracks = player.getVariantTracks();
       cb.onLog("info", `Manifest loaded — ${tracks.length} variants`);
+      reportTracks();
+
+      // With ABR off, pin the highest-bandwidth variant and re-assert it on
+      // every track change (live period boundaries can otherwise reset it).
+      if (cfg.advanced.lockMaxQuality) {
+        const pinTop = () => {
+          const vs = player.getVariantTracks();
+          if (!vs.length) return;
+          const top = vs.reduce((a: any, b: any) => (b.bandwidth > a.bandwidth ? b : a));
+          if (!top.active) player.selectVariantTrack(top, /* clearBuffer */ true);
+        };
+        pinTop();
+        player.addEventListener("trackschanged", pinTop);
+        const top = tracks.reduce((a: any, b: any) => (b.bandwidth > a.bandwidth ? b : a));
+        cb.onLog("info", `Fijado a ${Math.round(top.bandwidth / 1000)} kbps (${top.width || "?"}×${top.height || "?"})`);
+      }
+
       const active = tracks.find((t: any) => t.active);
       if (active) {
         curBitrate = active.bandwidth;
@@ -295,7 +402,8 @@ export function createShaka(cb: EngineCallbacks): EngineController {
       /* noop */
     }
     player = null;
+    audioSel.clear();
   }
 
-  return { load, destroy };
+  return { load, destroy, selectAudio, selectText };
 }

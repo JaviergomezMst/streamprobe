@@ -9,6 +9,42 @@ export function createHlsjs(cb: EngineCallbacks): EngineController {
   let statsIv: ReturnType<typeof setInterval> | null = null;
   let curBitrate = 0;
 
+  const trackLabel = (t: any, fallback: string) =>
+    [t.lang || t.language, t.name].filter(Boolean).join(" · ") || fallback;
+
+  function reportTracks() {
+    if (!hls) return;
+    const audio = (hls.audioTracks || []).map((t: any) => ({
+      id: String(t.id),
+      lang: t.lang || t.language,
+      label: trackLabel(t, `Audio ${t.id}`),
+      active: t.id === hls.audioTrack,
+    }));
+    const cur = hls.subtitleTrack; // -1 = off
+    const text = (hls.subtitleTracks || []).map((t: any) => ({
+      id: String(t.id),
+      lang: t.lang || t.language,
+      label: trackLabel(t, `Sub ${t.id}`),
+      active: t.id === cur,
+    }));
+    cb.onTracks(audio, text);
+  }
+
+  function selectAudio(id: string) {
+    if (hls) hls.audioTrack = parseInt(id, 10);
+  }
+  function selectText(id: string | null) {
+    if (!hls) return;
+    if (id === null) {
+      hls.subtitleTrack = -1;
+      hls.subtitleDisplay = false;
+    } else {
+      hls.subtitleTrack = parseInt(id, 10);
+      hls.subtitleDisplay = true;
+    }
+    reportTracks();
+  }
+
   async function load(video: HTMLVideoElement, cfg: LoadConfig) {
     cb.onLog("info", `Loading hls.js ${cfg.version} (bundled)…`);
     Hls = await loadLib("hlsjs", cfg.version);
@@ -39,7 +75,19 @@ export function createHlsjs(cb: EngineCallbacks): EngineController {
       const Base = Hls.DefaultConfig.loader;
       class ProxyLoader extends Base {
         load(context: any, config: any, callbacks: any) {
-          if (context?.url) context.url = proxifyUrl(context.url, cfg.net);
+          const realUrl: string | undefined = context?.url;
+          if (realUrl) context.url = proxifyUrl(realUrl, cfg.net);
+          // Restore the real URL on the response so hls.js resolves relative
+          // playlist/segment URLs against the real CDN, not /api/proxy (which
+          // would 404). Mirrors the Shaka response filter.
+          const onSuccess = callbacks.onSuccess;
+          callbacks.onSuccess = (response: any, stats: any, ctx: any, net: any) => {
+            if (realUrl) {
+              if (response) response.url = realUrl;
+              if (ctx) ctx.url = realUrl;
+            }
+            onSuccess(response, stats, ctx, net);
+          };
           super.load(context, config, callbacks);
         }
       }
@@ -66,7 +114,16 @@ export function createHlsjs(cb: EngineCallbacks): EngineController {
 
     hls.on(Hls.Events.MANIFEST_PARSED, (_ev: any, d: any) => {
       cb.onLog("info", `Manifest parsed — ${d.levels.length} levels`);
+      reportTracks();
       autoplay(video, cb.onLog);
+    });
+    [
+      "AUDIO_TRACKS_UPDATED",
+      "AUDIO_TRACK_SWITCHED",
+      "SUBTITLE_TRACKS_UPDATED",
+      "SUBTITLE_TRACK_SWITCH",
+    ].forEach((name) => {
+      if (Hls.Events[name]) hls.on(Hls.Events[name], reportTracks);
     });
     hls.on(Hls.Events.MANIFEST_LOADED, (_ev: any, d: any) => {
       cb.onNetwork({ time: new Date(), kind: "manifest", url: d?.url || cfg.url });
@@ -130,5 +187,5 @@ export function createHlsjs(cb: EngineCallbacks): EngineController {
     hls = null;
   }
 
-  return { load, destroy };
+  return { load, destroy, selectAudio, selectText };
 }

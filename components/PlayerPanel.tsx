@@ -24,6 +24,56 @@ interface Props {
   videoRef: RefObject<HTMLVideoElement>;
 }
 
+/** Audio + subtitle track pickers (shown once the engine reports tracks). */
+function TrackBar({ player, focusCls }: { player: UsePlayer; focusCls: string }) {
+  const { audioTracks, textTracks } = player;
+  if (audioTracks.length === 0 && textTracks.length === 0) return null;
+  const activeAudio = audioTracks.find((t) => t.active)?.id ?? "";
+  const activeText = textTracks.find((t) => t.active)?.id ?? "__off__";
+  const sel =
+    "fsel cursor-pointer rounded-[5px] border border-bd bg-sf2 px-[9px] py-[4px] font-mono text-[11px] text-tx1 outline-none " +
+    focusCls;
+  return (
+    <div className="flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-bd bg-sf1 px-3 py-[7px]">
+      {audioTracks.length > 0 && (
+        <label className="flex items-center gap-[7px] text-[10px] font-semibold uppercase tracking-[.06em] text-tx3">
+          🔊 Audio
+          <select
+            className={sel}
+            value={activeAudio}
+            onChange={(e) => player.selectAudio(e.target.value)}
+          >
+            {audioTracks.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {textTracks.length > 0 && (
+        <label className="flex items-center gap-[7px] text-[10px] font-semibold uppercase tracking-[.06em] text-tx3">
+          💬 Subtítulos
+          <select
+            className={sel}
+            value={activeText}
+            onChange={(e) =>
+              player.selectText(e.target.value === "__off__" ? null : e.target.value)
+            }
+          >
+            <option value="__off__">Off</option>
+            {textTracks.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
 export default function PlayerPanel({
   panel,
   engine,
@@ -89,6 +139,9 @@ export default function PlayerPanel({
           </div>
         )}
       </div>
+
+      {/* Audio / subtitle tracks */}
+      <TrackBar player={player} focusCls={isA ? "focus:border-ga" : "focus:border-gb"} />
 
       {/* Metrics */}
       <MetricsBar m={player.metrics} />

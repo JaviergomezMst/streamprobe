@@ -21,6 +21,7 @@ import type {
   Metrics,
   NetworkEntry,
   PlayerState,
+  TrackInfo,
 } from "@/lib/engines/types";
 
 export interface LogEntry {
@@ -75,10 +76,14 @@ export interface UsePlayer {
   buffered: BufferedState;
   running: boolean;
   overlayHidden: boolean;
+  audioTracks: TrackInfo[];
+  textTracks: TrackInfo[];
   load: (engine: EngineId, cfg: LoadConfig) => Promise<void>;
   stop: () => void;
   reset: () => void;
   clear: (kind: "events" | "abr" | "scte" | "net" | "manifest") => void;
+  selectAudio: (id: string) => void;
+  selectText: (id: string | null) => void;
   exportJSON: (engine: EngineId, url: string) => void;
 }
 
@@ -96,6 +101,8 @@ export function usePlayer(
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [audioTracks, setAudioTracks] = useState<TrackInfo[]>([]);
+  const [textTracks, setTextTracks] = useState<TrackInfo[]>([]);
   const manifestSeqRef = useRef(0);
   const seamSigRef = useRef("");
   const urlRef = useRef("");
@@ -349,6 +356,8 @@ export function usePlayer(
       setScteLog([]);
       setManifests([]);
       setBuffered(EMPTY_BUFFERED);
+      setAudioTracks([]);
+      setTextTracks([]);
       firstPlayRef.current = true;
       bufTRef.current = null;
       loadTRef.current = Date.now();
@@ -371,6 +380,10 @@ export function usePlayer(
         onState: setState,
         onNetwork: (entry) => setNetLog((prev) => [...prev, entry].slice(-LOG_LIMIT)),
         onManifest: (m) => pushManifest(m, "engine"),
+        onTracks: (a, t) => {
+          setAudioTracks(a);
+          setTextTracks(t);
+        },
       });
       ctrlRef.current = ctrl;
 
@@ -410,6 +423,13 @@ export function usePlayer(
     },
     []
   );
+
+  const selectAudio = useCallback((id: string) => {
+    ctrlRef.current?.selectAudio?.(id);
+  }, []);
+  const selectText = useCallback((id: string | null) => {
+    ctrlRef.current?.selectText?.(id);
+  }, []);
 
   const exportJSON = useCallback(
     (engine: EngineId, url: string) => {
@@ -458,10 +478,14 @@ export function usePlayer(
     buffered,
     running,
     overlayHidden,
+    audioTracks,
+    textTracks,
     load,
     stop,
     reset,
     clear,
+    selectAudio,
+    selectText,
     exportJSON,
   };
 }

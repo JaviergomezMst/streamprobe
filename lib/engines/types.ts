@@ -54,6 +54,8 @@ export interface AdvancedConfig {
   audioLang: string;
   returnToLiveWindow: boolean;
   stalledMinDuration: number;
+  /** Disable ABR and pin the highest-bitrate rendition (don't let it drop). */
+  lockMaxQuality: boolean;
 }
 
 export interface NetOverrides {
@@ -153,6 +155,14 @@ export interface EngineManifest {
   bytes?: number;
 }
 
+/** A selectable audio or text (subtitle) track. */
+export interface TrackInfo {
+  id: string; // engine-specific identifier (stringified)
+  label: string; // human-readable
+  lang?: string;
+  active: boolean;
+}
+
 export interface EngineCallbacks {
   onLog(type: LogType, msg: string): void;
   onAbr(
@@ -164,11 +174,17 @@ export interface EngineCallbacks {
   onState(state: PlayerState): void;
   onNetwork(entry: NetworkEntry): void;
   onManifest(m: EngineManifest): void;
+  /** Available audio + text tracks (fired on load and whenever they change). */
+  onTracks(audio: TrackInfo[], text: TrackInfo[]): void;
 }
 
 export interface EngineController {
   load(video: HTMLVideoElement, cfg: LoadConfig): Promise<void>;
   destroy(): void;
+  /** Switch audio track by TrackInfo.id. */
+  selectAudio?(id: string): void;
+  /** Switch subtitle track by TrackInfo.id, or null to turn subtitles off. */
+  selectText?(id: string | null): void;
 }
 
 export type EngineFactory = (cb: EngineCallbacks) => EngineController;
