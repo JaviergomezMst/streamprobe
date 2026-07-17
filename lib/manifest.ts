@@ -41,9 +41,6 @@ export interface TrackTimeline {
   entries: { startTick: number; d: number; r: number; explicitT: boolean }[];
 }
 
-/** @deprecated alias kept for older imports */
-export type VideoTimeline = TrackTimeline;
-
 /** Per-period breakdown of a DASH MPD. */
 export interface DashPeriod {
   index: number;
@@ -71,10 +68,6 @@ export interface DashPeriod {
 export interface Continuity {
   continuous: boolean;
   gapSec: number; // video presentation-time gap at the seam (+hole / −overlap), 0 = perfect
-  audioGapSec?: number; // same, for audio
-  timescaleChanged: boolean;
-  ptoResetSec?: number; // if the media clock jumped independent of the seam
-  codecChanged: boolean;
   reasons: string[]; // human-readable notes on what breaks (empty if continuous)
 }
 
@@ -241,10 +234,6 @@ export function checkContinuity(
   const famPrev = family(prev.videoCodecs);
   const famNext = family(next.videoCodecs);
   const codecChanged = !!famPrev && !!famNext && famPrev !== famNext;
-  // A PTO reset that isn't explained by the seam gap means the media clock
-  // jumped — the classic trigger for a buffered-range discontinuity.
-  const ptoResetSec =
-    a.timescale === b.timescale ? undefined : (b.pto - a.pto) / b.timescale;
 
   const reasons: string[] = [];
   if (Math.abs(gapSec) > 0.05)
@@ -260,15 +249,7 @@ export function checkContinuity(
   if (codecChanged)
     reasons.push(`familia de codec de vídeo cambia ${famPrev} → ${famNext}`);
 
-  return {
-    continuous: reasons.length === 0,
-    gapSec,
-    audioGapSec,
-    timescaleChanged,
-    ptoResetSec,
-    codecChanged,
-    reasons,
-  };
+  return { continuous: reasons.length === 0, gapSec, reasons };
 }
 
 /** Extract period structure and SCTE-35 markers from a DASH MPD. */

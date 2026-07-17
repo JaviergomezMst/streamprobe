@@ -10,7 +10,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Platform = "webos" | "tizen";
-type Action = "deploy" | "package" | "browser";
+// "browser" is handled entirely client-side (just opens the URL) and never
+// reaches this route.
+type Action = "deploy" | "package";
 
 interface Body {
   platform: Platform;
@@ -19,7 +21,6 @@ interface Body {
   macHost: string; // "192.168.1.176:3001"
   deviceName?: string; // webOS ares profile (default "lgtv")
   securityProfile?: string; // Tizen signing profile
-  tizenDevice?: string; // Tizen sdb target (default the connected IP)
 }
 
 interface Step {
@@ -105,7 +106,6 @@ function steps(body: Body): Step[] {
 
   // Tizen
   const profile = body.securityProfile?.trim();
-  const target = body.tizenDevice?.trim() || tvIp;
   const wgt = "tv-launchers/tizen/StreamProbe.wgt";
   const pkgArgs = ["package", "-t", "wgt", "-o", "tv-launchers/tizen", "--", "tv-launchers/tizen"];
   if (profile) pkgArgs.splice(2, 0, "-s", profile);
@@ -114,7 +114,7 @@ function steps(body: Body): Step[] {
   return [
     { cmd: "sdb", args: ["connect", tvIp], optional: true },
     ...pkg,
-    { cmd: "tizen", args: ["install", "-n", wgt, "-t", target] },
+    { cmd: "tizen", args: ["install", "-n", wgt, "-t", tvIp] },
   ];
 }
 

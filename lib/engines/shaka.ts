@@ -366,15 +366,16 @@ export function createShaka(cb: EngineCallbacks): EngineController {
       // With ABR off, pin the highest-bandwidth variant and re-assert it on
       // every track change (live period boundaries can otherwise reset it).
       if (cfg.advanced.lockMaxQuality) {
+        const highest = (vs: any[]) =>
+          vs.reduce((a: any, b: any) => (b.bandwidth > a.bandwidth ? b : a));
         const pinTop = () => {
           const vs = player.getVariantTracks();
-          if (!vs.length) return;
-          const top = vs.reduce((a: any, b: any) => (b.bandwidth > a.bandwidth ? b : a));
-          if (!top.active) player.selectVariantTrack(top, /* clearBuffer */ true);
+          if (vs.length && !highest(vs).active)
+            player.selectVariantTrack(highest(vs), /* clearBuffer */ true);
         };
         pinTop();
         player.addEventListener("trackschanged", pinTop);
-        const top = tracks.reduce((a: any, b: any) => (b.bandwidth > a.bandwidth ? b : a));
+        const top = highest(tracks);
         cb.onLog("info", `Fijado a ${Math.round(top.bandwidth / 1000)} kbps (${top.width || "?"}×${top.height || "?"})`);
       }
 
